@@ -7,42 +7,42 @@ use std::borrow::Borrow;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-struct SafeQueue<T> {
-    queue: Arc<Mutex<Vec<T>>>
-}
+// struct SafeQueue<T> {
+//     queue: Arc<Mutex<Vec<T>>>
+// }
 
-impl<T> Clone for SafeQueue<T> {
-    fn clone(&self) -> Self {
-        Self{
-            queue: self.queue.clone()
-        }
-    }
-}
+// impl<T> Clone for SafeQueue<T> {
+//     fn clone(&self) -> Self {
+//         Self{
+//             queue: self.queue.clone()
+//         }
+//     }
+// }
 
-impl<T> SafeQueue<T> {
-    fn new() -> SafeQueue<T> {
-        SafeQueue {
-            queue: Arc::new(Mutex::new(Vec::new()))
-        }
-    }
+// impl<T> SafeQueue<T> {
+//     fn new() -> SafeQueue<T> {
+//         SafeQueue {
+//             queue: Arc::new(Mutex::new(Vec::new()))
+//         }
+//     }
 
-    fn is_empty(&self) -> bool {
-        let queue = self.queue.lock().unwrap();
-        queue.is_empty()
-    }
+//     fn is_empty(&self) -> bool {
+//         let queue = self.queue.lock().unwrap();
+//         queue.is_empty()
+//     }
 
-    fn push(&self, item: T) {
-        let mut queue = self.queue.lock().unwrap();
-        queue.push(item)
-    }
+//     fn push(&self, item: T) {
+//         let mut queue = self.queue.lock().unwrap();
+//         queue.push(item)
+//     }
 
-    fn pop(&self) -> Option<T> {
-        let mut queue = self.queue.lock().unwrap();
-        queue.pop()
-    }
-}
+//     fn pop(&self) -> Option<T> {
+//         let mut queue = self.queue.lock().unwrap();
+//         queue.pop()
+//     }
+// }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 struct FileMover{
     source_path: String,
     destination: String
@@ -60,29 +60,63 @@ fn main() {
     //args[0] is the program name, which we don't need here.
     let top_level_dir = &args[1];
     let destination = &args[2];
-    let mut file_names = Vec::new();
-    walk_directory(&top_level_dir, &mut file_names);
+    let mut test_vec = vec![];
 
-    let mut file_queue = SafeQueue::<FileMover>::new();
+    walk_directory(&top_level_dir, &mut test_vec, destination);
 
-    for file_name in file_names {
-        let file_mover = get_file_mover_obj(file_name, destination);
-        file_queue.push(file_mover);
-    }
+    //let mut file_queue = SafeQueue::<FileMover>::new();
 
+    let mut i = 0;
+    let thread_limit = 10;
+    let file_num = test_vec.len() as i32;
+    let mut thread_files_limit: f64 = ((file_num / thread_limit) as f64).ceil();
     let mut handles = vec![];
-    for i in (0..10) {
-        let mut file_queue_copy = file_queue.clone();
+
+    loop {
+        if i + thread_files_limit as i32 >= file_num {
+            let files_to_move = test_vec[i as usize..].to_vec();
+            let handle = thread::spawn(move || {
+                for file_mover in files_to_move {
+                    copy_file(file_mover);
+                    //println!("thread {} copy done", i);
+                }
+            });
+            handles.push(handle);
+            break;
+        }
+
+        if i == file_num {
+            break;
+        }
+
+        let files_to_move = test_vec[i as usize..i as usize + thread_files_limit as usize].to_vec();
         let handle = thread::spawn(move || {
-            while !file_queue_copy.is_empty() {
-                let file_mover = file_queue_copy.pop();
-                copy_file(file_mover.unwrap());
-                println!("Thread {} copy successful", i);
-            }
-        });
-        handles.push(handle);
+                for file_mover in files_to_move {
+                    copy_file(file_mover);
+                    //println!("thread {} copy done", i);
+                }
+            });
+            handles.push(handle);
+        i = i + thread_files_limit as i32
+
     }
 
+    // for file_mover in test_vec {
+    //     copy_file(file_mover);
+    // }
+    // for i in (0..10) {
+    //     let mut file_queue_copy = file_queue.clone();
+    //     let handle = thread::spawn(move || {
+    //         while !file_queue_copy.is_empty() {
+    //             let file_mover = file_queue_copy.pop();
+    //             copy_file(file_mover.unwrap());
+    //             println!("Thread {} copy successful", i);
+    //         }
+    //     });
+    //     handles.push(handle);
+    // }
+
+    println!("number of handles {}", handles.len());
     for handle in handles {
         handle.join().unwrap();
     }
@@ -92,7 +126,7 @@ fn main() {
 
 }
 
-fn walk_directory(path: &str, file_names: &mut Vec<String>) {
+fn walk_directory(path: &str, file_names: &mut Vec<FileMover>, destination: &str) {
     if let Ok(entries) = fs::read_dir(path) {
         for entry in entries {
             if let Ok(entry) = entry {
@@ -100,11 +134,11 @@ fn walk_directory(path: &str, file_names: &mut Vec<String>) {
                 if path.is_file() {
                     // If it's a file, add its full path to the vector
                     if let Some(file_name_str) = path.to_str() {
-                        file_names.push(file_name_str.to_string());
+                        file_names.push(get_file_mover_obj(file_name_str.to_string(), destination));
                     }
                 } else if path.is_dir() {
                     // If it's a directory, recursively walk through it
-                    walk_directory(&path.to_string_lossy(), file_names);
+                    walk_directory(&path.to_string_lossy(), file_names, destination);
                 }
             }
         }
