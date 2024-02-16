@@ -2,7 +2,45 @@ use std::fs;
 use std::env;
 use std::io;
 use std::path::Path;
-use std::collections::VecDeque;
+use std::{thread, time};
+use std::borrow::Borrow;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
+
+struct SafeQueue<T> {
+    queue: Arc<Mutex<Vec<T>>>
+}
+
+impl<T> Clone for SafeQueue<T> {
+    fn clone(&self) -> Self {
+        Self{
+            queue: self.queue.clone()
+        }
+    }
+}
+
+impl<T> SafeQueue<T> {
+    fn new() -> SafeQueue<T> {
+        SafeQueue {
+            queue: Arc::new(Mutex::new(Vec::new()))
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        let queue = self.queue.lock().unwrap();
+        queue.is_empty()
+    }
+
+    fn push(&self, item: T) {
+        let mut queue = self.queue.lock().unwrap();
+        queue.push(item)
+    }
+
+    fn pop(&self) -> Option<T> {
+        let mut queue = self.queue.lock().unwrap();
+        queue.pop()
+    }
+}
 
 #[derive(PartialEq, Debug)]
 struct FileMover{
@@ -11,6 +49,7 @@ struct FileMover{
 }
 
 fn main() {
+    let now = time::Instant::now();
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 3 {
@@ -24,21 +63,33 @@ fn main() {
     let mut file_names = Vec::new();
     walk_directory(&top_level_dir, &mut file_names);
 
-    let mut file_queue: VecDeque<FileMover> = VecDeque::new();
+    let mut file_queue = SafeQueue::<FileMover>::new();
 
     for file_name in file_names {
         let file_mover = get_file_mover_obj(file_name, destination);
-        file_queue.push_front(file_mover);
+        file_queue.push(file_mover);
     }
 
-    match copy_file(file_queue.pop_front().unwrap()) {
-        Err(x) => {
-            eprintln!("Error occurred while copying file {:?}", x);
-        }
-        Ok(_) => {
-            println!("all good, nothing to see here");
-        }
+    let mut handles = vec![];
+    for i in (0..10) {
+        let mut file_queue_copy = file_queue.clone();
+        let handle = thread::spawn(move || {
+            while !file_queue_copy.is_empty() {
+                let file_mover = file_queue_copy.pop();
+                copy_file(file_mover.unwrap());
+                println!("Thread {} copy successful", i);
+            }
+        });
+        handles.push(handle);
     }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    let elapsed_time = now.elapsed();
+    println!("Running multi threaded copy took {} seconds.", elapsed_time.as_secs());
+
 }
 
 fn walk_directory(path: &str, file_names: &mut Vec<String>) {
@@ -92,7 +143,7 @@ fn copy_file(file_mover: FileMover)-> io::Result<()> {
     // Attempt to copy the file
     match fs::copy(&file_mover.source_path, &file_mover.destination) {
         Ok(_) => {
-            println!("{} copy successfully", &file_mover.source_path);
+            //println!("{} copy successfully", &file_mover.source_path);
             Ok(())
         },
         Err(err) => {
