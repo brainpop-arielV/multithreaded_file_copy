@@ -123,7 +123,7 @@ fn main() {
     }
 
     let elapsed_time = now.elapsed();
-    println!("Running multi threaded copy took {} seconds.", elapsed_time.as_secs());
+    println!("Running multi threaded copy took {} millis.", elapsed_time.as_millis());
 
 }
 
