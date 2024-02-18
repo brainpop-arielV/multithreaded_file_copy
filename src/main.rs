@@ -60,9 +60,10 @@ fn main() {
     //args[0] is the program name, which we don't need here.
     let top_level_dir = &args[1];
     let destination = &args[2];
+    let common_prefix_len = get_common_prefix_len(top_level_dir, destination);
     let mut test_vec = vec![];
 
-    walk_directory(&top_level_dir, &mut test_vec, destination);
+    walk_directory(&top_level_dir, &mut test_vec, destination, common_prefix_len);
 
     //let mut file_queue = SafeQueue::<FileMover>::new();
 
@@ -126,7 +127,7 @@ fn main() {
 
 }
 
-fn walk_directory(path: &str, file_names: &mut Vec<FileMover>, destination: &str) {
+fn walk_directory(path: &str, file_names: &mut Vec<FileMover>, destination: &str, common_prefix_len: usize) {
     if let Ok(entries) = fs::read_dir(path) {
         for entry in entries {
             if let Ok(entry) = entry {
@@ -134,18 +135,30 @@ fn walk_directory(path: &str, file_names: &mut Vec<FileMover>, destination: &str
                 if path.is_file() {
                     // If it's a file, add its full path to the vector
                     if let Some(file_name_str) = path.to_str() {
-                        file_names.push(get_file_mover_obj(file_name_str.to_string(), destination));
+                        file_names.push(get_file_mover_obj(file_name_str.to_string(), destination, common_prefix_len));
                     }
                 } else if path.is_dir() {
                     // If it's a directory, recursively walk through it
-                    walk_directory(&path.to_string_lossy(), file_names, destination);
+                    walk_directory(&path.to_string_lossy(), file_names, destination, common_prefix_len);
                 }
             }
         }
     }
 }
 
-fn get_file_mover_obj(source_path: String, destination: &str)-> FileMover {
+fn get_common_prefix_len(source_path: &str, destination: &str)-> usize {
+     // Convert strings to iterators of characters
+    let mut iter1 = source_path.chars();
+    let mut iter2 = destination.chars();
+
+    // Find the common prefix length
+    iter1
+        .zip(&mut iter2)
+        .take_while(|(c1, c2)| c1 == c2)
+        .count()
+}
+
+fn get_file_mover_obj(source_path: String, destination: &str, common_prefix_len: usize)-> FileMover {
      // Convert strings to iterators of characters
     let mut iter1 = source_path.chars();
     let mut iter2 = destination.chars();
