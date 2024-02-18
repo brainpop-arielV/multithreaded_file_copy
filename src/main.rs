@@ -159,15 +159,6 @@ fn get_common_prefix_len(source_path: &str, destination: &str)-> usize {
 }
 
 fn get_file_mover_obj(source_path: String, destination: &str, common_prefix_len: usize)-> FileMover {
-     // Convert strings to iterators of characters
-    let mut iter1 = source_path.chars();
-    let mut iter2 = destination.chars();
-
-    // Find the common prefix length
-    let common_prefix_len = iter1
-        .zip(&mut iter2)
-        .take_while(|(c1, c2)| c1 == c2)
-        .count();
 
     let diff1 = &source_path[common_prefix_len..];
     let diff2 = &destination[common_prefix_len..];
