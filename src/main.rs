@@ -1,15 +1,20 @@
 use std::fs;
-use std::env;
 use std::io;
 use std::path::Path;
 use std::{thread, time};
-use std::borrow::Borrow;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use regex::Regex;
-use itertools::Itertools;
-use std::collections::HashSet;
+use clap::Parser;
 
+#[derive(Parser)]
+#[command(name="fcp",version="0.3", about="multi threaded file copying", long_about = None)]
+struct Cli {
+    source: String,
+    destination: String,
+    #[arg(short, long="workers")]
+    workers: Option<i32>,
+    #[arg(short, long="verbose")]
+    verbose: bool
+}
 
 struct SafeQueue<T> {
     queue: Arc<Mutex<Vec<T>>>
@@ -41,13 +46,8 @@ impl<T> SafeQueue<T> {
     }
 
     fn len(&self) -> usize {
-        let mut queue = self.queue.lock().unwrap();
+        let queue = self.queue.lock().unwrap();
         queue.len()
-    }
-
-    fn pop(&self) -> Option<T> {
-        let mut queue = self.queue.lock().unwrap();
-        queue.pop()
     }
 
     fn drain(&self, n_elements: usize) -> Vec<T> {
@@ -68,78 +68,41 @@ struct FileMover{
 
 fn main() {
     let now = time::Instant::now();
-    let args: Vec<String> = env::args().collect();
+    let cli = Cli::parse();
 
-    if args.len() !=4 {
-        eprintln!("Usage: {} <directory_path>, <destination_path>, <n_workers>", args[0]);
-        std::process::exit(1);
-    }
+    // let args: Vec<String> = env::args().collect();
+
+    // if args.len() !=4 {
+    //     eprintln!("Usage: {} <directory_path>, <destination_path>, <n_workers>", args[0]);
+    //     std::process::exit(1);
+    // }
 
     //args[0] is the program name, which we don't need here.
-    let top_level_dir = &args[1];
-    let destination = &args[2];
-    let n_workers = &args[3].parse::<i32>();
-    let n_workers = match n_workers {
-        Ok(i) => *i,
-        Err(_) => panic!("n_workers param must be int")
+    let source = &cli.source;
+    let destination = &cli.destination;
+    let n_workers = match cli.workers {
+        Some(i) => i,
+        None => 4 //default number of workers
     };
+    let verbose: bool = cli.verbose;
 
-    let common_prefix_len = get_common_prefix_len(top_level_dir, destination);
+    let top_level_dir = get_top_level_dir(source);
     let mut file_queue = SafeQueue::new();
-    //let mut subdirectories = HashSet::<String>::new();
 
-    walk_directory(&top_level_dir, &mut file_queue, destination, common_prefix_len);
+    walk_directory(&source, &mut file_queue, destination, &top_level_dir);
 
-    //create_subdirs(subdirectories);
-    //let mut file_queue = SafeQueue::<FileMover>::new();
-
-    let mut i = 0;
-    // let file_num = test_vec.len() as i32;
-    // let mut thread_files_limit: f64 = ((file_num / n_workers) as f64).ceil();
     let mut handles = vec![];
 
-    // loop {
-    //     if i + thread_files_limit as i32 >= file_num {
-    //         let files_to_move = test_vec[i as usize..].to_vec();
-    //         let handle = thread::spawn(move || {
-    //             for file_mover in files_to_move {
-    //                 copy_file(file_mover);
-    //                 //println!("thread {} copy done", i);
-    //             }
-    //         });
-    //         handles.push(handle);
-    //         break;
-    //     }
-
-    //     if i == file_num {
-    //         break;
-    //     }
-
-    //     let files_to_move = test_vec[i as usize..i as usize + thread_files_limit as usize].to_vec();
-    //     let handle = thread::spawn(move || {
-    //             for file_mover in files_to_move {
-    //                 copy_file(file_mover);
-    //                 //println!("thread {} copy done", i);
-    //             }
-    //         });
-    //         handles.push(handle);
-    //     i = i + thread_files_limit as i32
-
-    // }
-
-    // for file_mover in test_vec {
-    //     copy_file(file_mover);
-    // }
     println!("number of files to copy {:?}", file_queue.len());
 
     let files_per_queue: usize = 10_000;
-    for i in (0..n_workers) {
-        let mut file_queue_copy = file_queue.clone();
+    for _ in 0..n_workers {
+        let file_queue_copy = file_queue.clone();
         let handle = thread::spawn(move || {
             while !file_queue_copy.is_empty() {
                 let files_to_move = file_queue_copy.drain(files_per_queue);
                 for file_mover in files_to_move {
-                    copy_file(file_mover);
+                    let _ = copy_file(file_mover, &verbose);
                 }
             }
         });
@@ -156,26 +119,7 @@ fn main() {
 
 }
 
-fn extract_dir(input: String) -> String {
-
-    let re: Regex = Regex::new(r".*\/").unwrap();
-    let rr = match re.captures(&input) {
-                    Some(i) => String::from(i.get(0).unwrap().as_str()),
-                    None => String::new(),
-                };
-
-    rr
-}
-
-fn create_subdirs(mut subdirectories: HashSet<String>) -> Option<()> {
-    for subdir in subdirectories {
-
-        fs::create_dir_all(Path::new(&subdir)).ok()?;
-    }
-    None
-}
-
-fn walk_directory(path: &str, file_names: &mut SafeQueue<FileMover>, destination: &str, common_prefix_len: usize) {
+fn walk_directory(path: &str, file_names: &mut SafeQueue<FileMover>, destination: &str, top_level_dir: &str) {
     if let Ok(entries) = fs::read_dir(path) {
         for entry in entries {
             if let Ok(entry) = entry {
@@ -183,46 +127,40 @@ fn walk_directory(path: &str, file_names: &mut SafeQueue<FileMover>, destination
                 if path.is_file() {
                     // If it's a file, add its full path to the vector
                     if let Some(file_name_str) = path.to_str() {
-                        let file_mover = get_file_mover_obj(file_name_str.to_string(), destination, common_prefix_len);
-                        //let directory_to_create = extract_dir(file_mover.destination.clone());
-                        //subdirectories.insert(directory_to_create);
+                        let file_mover = get_file_mover_obj(file_name_str.to_string(), destination, top_level_dir);
                         file_names.push(file_mover);
                     }
                 } else if path.is_dir() {
                     // If it's a directory, recursively walk through it
-                    walk_directory(&path.to_string_lossy(), file_names, destination, common_prefix_len);
+                    walk_directory(&path.to_string_lossy(), file_names, destination, top_level_dir);
                 }
             }
         }
     }
 }
 
-fn get_common_prefix_len(source_path: &str, destination: &str)-> usize {
+fn get_top_level_dir(destination: &str)-> String {
      // Convert strings to iterators of characters
-    let mut iter1 = source_path.chars();
-    let mut iter2 = destination.chars();
+    let mut destination_manipulator = String::from(destination);
 
-    // Find the common prefix length
-    iter1
-        .zip(&mut iter2)
-        .take_while(|(c1, c2)| c1 == c2)
-        .count()
+    if destination_manipulator.chars().last().unwrap() == '/' {
+        destination_manipulator.pop();
+    }
+
+    String::from(destination_manipulator.split("/").last().unwrap())
 }
 
-fn get_file_mover_obj(source_path: String, destination: &str, common_prefix_len: usize)-> FileMover {
+fn get_file_mover_obj(source_path: String, destination: &str, top_level_dir: &str)-> FileMover {
 
-    let diff1 = &source_path[common_prefix_len..];
-    let diff2 = &destination[common_prefix_len..];
-
-    let interpolated_destination: String = format!{"{}/{}", diff2.to_string(), diff1.to_string()};
-
+    //formatting the destination to consist of the destination dir, top level common source dir and the subdirectories unique to each file
+    let destination = format!("{}{}{}", destination, top_level_dir, source_path.clone().split(top_level_dir).skip(1).collect::<String>());
     FileMover{
         source_path: source_path,
-        destination: format!("{}{}", &destination[..common_prefix_len], &interpolated_destination)
+        destination: destination
     }
 }
 
-fn copy_file(file_mover: FileMover)-> io::Result<()> {
+fn copy_file(file_mover: FileMover, verbose: &bool)-> io::Result<()> {
 
     // Create the destination directory and its parent directories if they don't exist
     if let Some(parent_dir) = Path::new(&file_mover.destination).parent() {
@@ -232,7 +170,9 @@ fn copy_file(file_mover: FileMover)-> io::Result<()> {
     // Attempt to copy the file
     match fs::copy(&file_mover.source_path, &file_mover.destination) {
         Ok(_) => {
-            //println!("{} copy successfully", &file_mover.source_path);
+            if *verbose {
+                println!("{} copy successfully", &file_mover.destination);
+            }
             Ok(())
         },
         Err(err) => {
