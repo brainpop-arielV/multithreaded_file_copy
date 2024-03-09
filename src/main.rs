@@ -82,7 +82,14 @@ fn main() {
     let destination = &cli.destination;
     let n_workers = match cli.workers {
         Some(i) => i,
-        None => 4 //default number of workers
+        None => {match thread::available_parallelism() {
+            Ok(i) => i.get() as i32,
+            Err(e) => {
+                println!("Couldn't match get number of available cpus, err {} occurred, defaulting to 4 workers", e);
+                4
+            }
+        }}
+ //default number of workers
     };
     let verbose: bool = cli.verbose;
 
