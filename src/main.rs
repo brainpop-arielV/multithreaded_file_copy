@@ -2,82 +2,12 @@ use std::fs;
 use std::io;
 use std::path::Path;
 use std::{thread, time};
-use std::sync::{Arc, Mutex};
-use clap::Parser;
-
-#[derive(Parser)]
-#[command(name="fcp",version="0.3", about="multi threaded file copying", long_about = None)]
-struct Cli {
-    source: String,
-    destination: String,
-    #[arg(short, long="workers")]
-    workers: Option<i32>,
-    #[arg(short, long="verbose")]
-    verbose: bool
-}
-
-struct SafeQueue<T> {
-    queue: Arc<Mutex<Vec<T>>>
-}
-
-impl<T> Clone for SafeQueue<T> {
-    fn clone(&self) -> Self {
-        Self{
-            queue: self.queue.clone()
-        }
-    }
-}
-
-impl<T> SafeQueue<T> {
-    fn new() -> SafeQueue<T> {
-        SafeQueue {
-            queue: Arc::new(Mutex::new(Vec::new()))
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        let queue = self.queue.lock().unwrap();
-        queue.is_empty()
-    }
-
-    fn push(&self, item: T) {
-        let mut queue = self.queue.lock().unwrap();
-        queue.push(item)
-    }
-
-    fn len(&self) -> usize {
-        let queue = self.queue.lock().unwrap();
-        queue.len()
-    }
-
-    fn drain(&self, n_elements: usize) -> Vec<T> {
-        let mut queue = self.queue.lock().unwrap();
-        if n_elements > queue.len()
-        {
-            return queue.drain(..).collect();
-        }
-        queue.drain(..n_elements).collect()
-    }
-}
-
-#[derive(PartialEq, Debug, Clone)]
-struct FileMover{
-    source_path: String,
-    destination: String
-}
+use fcp::{SafeQueue, FileMover, Cli};
 
 fn main() {
     let now = time::Instant::now();
-    let cli = Cli::parse();
+    let cli = Cli::new();
 
-    // let args: Vec<String> = env::args().collect();
-
-    // if args.len() !=4 {
-    //     eprintln!("Usage: {} <directory_path>, <destination_path>, <n_workers>", args[0]);
-    //     std::process::exit(1);
-    // }
-
-    //args[0] is the program name, which we don't need here.
     let source = &cli.source;
     let destination = &cli.destination;
     let n_workers = match cli.workers {
@@ -86,33 +16,22 @@ fn main() {
             Ok(i) => i.get() as i32,
             Err(e) => {
                 println!("Couldn't match get number of available cpus, err {} occurred, defaulting to 4 workers", e);
-                4
+                4  //default number of workers
             }
         }}
- //default number of workers
     };
     let verbose: bool = cli.verbose;
 
     let top_level_dir = get_top_level_dir(source);
     let mut file_queue = SafeQueue::new();
-
     walk_directory(&source, &mut file_queue, destination, &top_level_dir);
-
-    let mut handles = vec![];
 
     println!("number of files to copy {:?}", file_queue.len());
 
+    let mut handles = vec![];
     let files_per_queue: usize = 10_000;
     for _ in 0..n_workers {
-        let file_queue_copy = file_queue.clone();
-        let handle = thread::spawn(move || {
-            while !file_queue_copy.is_empty() {
-                let files_to_move = file_queue_copy.drain(files_per_queue);
-                for file_mover in files_to_move {
-                    let _ = copy_file(file_mover, &verbose);
-                }
-            }
-        });
+        let handle = get_thread(file_queue.clone(), files_per_queue, verbose);
         handles.push(handle);
     }
 
@@ -124,6 +43,18 @@ fn main() {
     let elapsed_time = now.elapsed();
     println!("Running multi threaded copy took {} millis.", elapsed_time.as_millis());
 
+}
+
+fn get_thread(file_queue_copy: SafeQueue<FileMover>, files_per_queue: usize, verbose: bool) -> thread::JoinHandle<()> {
+
+    thread::spawn(move || {
+            while !file_queue_copy.is_empty() {
+                let files_to_move = file_queue_copy.drain(files_per_queue);
+                for file_mover in files_to_move {
+                    let _ = copy_file(file_mover, verbose);
+                }
+            }
+        })
 }
 
 fn walk_directory(path: &str, file_names: &mut SafeQueue<FileMover>, destination: &str, top_level_dir: &str) {
@@ -143,6 +74,9 @@ fn walk_directory(path: &str, file_names: &mut SafeQueue<FileMover>, destination
                 }
             }
         }
+    }
+    else {
+        panic!("Could not read source path {}", path);
     }
 }
 
@@ -167,7 +101,7 @@ fn get_file_mover_obj(source_path: String, destination: &str, top_level_dir: &st
     }
 }
 
-fn copy_file(file_mover: FileMover, verbose: &bool)-> io::Result<()> {
+fn copy_file(file_mover: FileMover, verbose: bool)-> io::Result<()> {
 
     // Create the destination directory and its parent directories if they don't exist
     if let Some(parent_dir) = Path::new(&file_mover.destination).parent() {
@@ -177,7 +111,7 @@ fn copy_file(file_mover: FileMover, verbose: &bool)-> io::Result<()> {
     // Attempt to copy the file
     match fs::copy(&file_mover.source_path, &file_mover.destination) {
         Ok(_) => {
-            if *verbose {
+            if verbose {
                 println!("{} copy successfully", &file_mover.destination);
             }
             Ok(())
